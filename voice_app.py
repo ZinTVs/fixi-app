@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from upstash_redis import Redis
 
-# Librerie per la lettura dei file
+# Librerie per la lettura dei vari tipi di file
 from pypdf import PdfReader
 import docx
 import pandas as pd
@@ -41,7 +41,7 @@ def process_uploaded_file(uploaded_file, openai_client):
     file_bytes = uploaded_file.getvalue()
     file_ext = os.path.splitext(file_name)[1].lower()
 
-    # IMMAGINI
+    # --- IMMAGINI ---
     if file_ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"]:
         base64_img = base64.b64encode(file_bytes).decode('utf-8')
         mime = uploaded_file.type or f"image/{file_ext.replace('.', '')}"
@@ -53,7 +53,7 @@ def process_uploaded_file(uploaded_file, openai_client):
             "info": f"📸 Immagine: **{file_name}**"
         }
 
-    # AUDIO (Whisper)
+    # --- AUDIO (Whisper) ---
     elif file_ext in [".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac"]:
         try:
             audio_file = (file_name, file_bytes, uploaded_file.type or "audio/mpeg")
@@ -65,7 +65,7 @@ def process_uploaded_file(uploaded_file, openai_client):
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[AUDIO '{file_name}' - Errore: {e}]", "info": f"⚠️ Errore audio: {file_name}"}
 
-    # PDF
+    # --- PDF ---
     elif file_ext == ".pdf":
         try:
             reader = PdfReader(io.BytesIO(file_bytes))
@@ -74,7 +74,7 @@ def process_uploaded_file(uploaded_file, openai_client):
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[PDF '{file_name}']: Errore ({e})", "info": f"⚠️ Errore PDF: {file_name}"}
 
-    # WORD (.docx)
+    # --- WORD (.docx) ---
     elif file_ext in [".docx", ".doc"]:
         try:
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -83,7 +83,7 @@ def process_uploaded_file(uploaded_file, openai_client):
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[WORD '{file_name}']: Errore ({e})", "info": f"⚠️ Errore Word: {file_name}"}
 
-    # EXCEL / CSV
+    # --- EXCEL / CSV ---
     elif file_ext in [".xlsx", ".xls", ".csv"]:
         try:
             df = pd.read_csv(io.BytesIO(file_bytes)) if file_ext == ".csv" else pd.read_excel(io.BytesIO(file_bytes))
@@ -91,7 +91,7 @@ def process_uploaded_file(uploaded_file, openai_client):
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[TABELLA '{file_name}']: Errore ({e})", "info": f"⚠️ Errore tabella: {file_name}"}
 
-    # POWERPOINT (.pptx)
+    # --- POWERPOINT (.pptx) ---
     elif file_ext == ".pptx":
         try:
             prs = Presentation(io.BytesIO(file_bytes))
@@ -104,7 +104,7 @@ def process_uploaded_file(uploaded_file, openai_client):
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[POWERPOINT '{file_name}']: Errore ({e})", "info": f"⚠️ Errore PPT: {file_name}"}
 
-    # CODICE E TESTO (LUA, HTML, CSS, JS, PY, JSON, XML, TXT, etc.)
+    # --- CODICE E TESTO (LUA, HTML, CSS, JS, PY, JSON, XML, TXT, ecc.) ---
     try:
         text = file_bytes.decode("utf-8")
         return {"is_image": False, "text": f"\n\n[FILE CODICE/TESTO '{file_name}']:\n{text}", "info": f"💻 File **{file_name}**"}
@@ -115,7 +115,7 @@ def process_uploaded_file(uploaded_file, openai_client):
         except Exception:
             pass
 
-    # BINARI GENERICI
+    # --- BINARI GENERICI ---
     size_kb = round(len(file_bytes) / 1024, 2)
     return {
         "is_image": False,
@@ -142,26 +142,33 @@ def load_github_knowledge():
         
     return knowledge
 
-# 5. Sanitizzazione dei messaggi per evitare errori con la API di Groq
-def prepare_messages_for_groq(messages, is_vision_active):
-    clean_list = []
-    for m in messages:
-        role = m["role"]
-        content = m["content"]
+# 5. Pulizia dello Storico (rimuove il base64 pesante per le richieste successive)
+def sanitize_messages_for_api(messages):
+    clean_messages = []
+    for msg in messages:
+        role = msg["role"]
+        content = msg["content"]
         
-        # Se il contenuto è una lista (contiene immagini/strutture complesse)
         if isinstance(content, list):
-            if is_vision_active and m == messages[-1]:
-                # Mantiene la struttura solo per l'ultimo messaggio se il modello Vision è attivo
-                clean_list.append(m)
-            else:
-                # Altrimenti converte in testo semplice per non far fallire i modelli standard
-                text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-                clean_list.append({"role": role, "content": " ".join(text_parts) or "[Foto/Allegato elaborato]"})
-        else:
-            clean_list.append({"role": role, "content": str(content)})
+            # Se è una lista con immagini allegate
+            text_parts = []
+            has_image = False
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif part.get("type") == "image_url":
+                        has_image = True
             
-    return clean_list
+            combined = " ".join(text_parts)
+            if has_image and "[Immagine allegata]" not in combined:
+                combined += " [Immagine allegata precedente]"
+            
+            clean_messages.append({"role": role, "content": combined.strip() or "[Allegato]"})
+        else:
+            clean_messages.append({"role": role, "content": str(content)})
+            
+    return clean_messages
 
 # 6. Gestione Memoria Cloud
 def load_chat_history():
@@ -177,8 +184,8 @@ def load_chat_history():
 def save_chat_history(messages):
     if redis:
         try:
-            clean_messages = prepare_messages_for_groq(messages, is_vision_active=False)
-            redis.set("fixi_chat_history", json.dumps(clean_messages, ensure_ascii=False))
+            clean_msgs = sanitize_messages_for_api(messages)
+            redis.set("fixi_chat_history", json.dumps(clean_msgs, ensure_ascii=False))
         except Exception as e:
             st.error(f"Errore salvataggio memoria: {e}")
 
@@ -304,12 +311,24 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# Barra con pulsante di pulizia chat
+col_clear, _ = st.columns([1, 4])
+with col_clear:
+    if st.button("🗑️ Pulisci conversazione", use_container_width=True):
+        st.session_state.messages = []
+        if redis:
+            try:
+                redis.delete("fixi_chat_history")
+            except Exception:
+                pass
+        st.rerun()
+
 github_docs = load_github_knowledge()
 
 system_prompt = {
     "role": "system",
-    "content": f"Sei Fixi, un'intelligenza artificiale minimale ed esperta di programmazione e file di sistema. Rispondi in modo chiaro, diretto e amichevole in italiano.\n"
-               f"Hai accesso ai seguenti file di conoscenza del tuo proprietario:\n{github_docs}"
+    "content": f"Sei Fixi, un'intelligenza artificiale esperta di programmazione (in particolare FiveM, Lua, JS, HTML/CSS). Rispondi in modo chiaro, preciso e strutturato in italiano.\n"
+               f"File di contesto del proprietario:\n{github_docs}"
 }
 
 # Mostra i messaggi precedenti
@@ -326,9 +345,9 @@ for message in st.session_state.messages:
                         st.image(part["image_url"]["url"], width=280)
 
 # Pulsante Tasto "+" per allegare file
-with st.popover("➕ Allega file (seleziona o trascina più file insieme)", use_container_width=True):
+with st.popover("➕ Allega file", use_container_width=True):
     uploaded_files = st.file_uploader(
-        "Scegli uno o più file dal tuo dispositivo", 
+        "Scegli file dal dispositivo", 
         type=None, 
         accept_multiple_files=True
     )
@@ -350,47 +369,47 @@ prompt = st.chat_input("Scrivi un messaggio a Fixi...")
 
 if prompt:
     user_text = str(prompt)
-    model_to_use = "llama-3.3-70b-versatile"
-    is_vision = False
     
+    # Prepara il messaggio utente corrente
     if first_image:
         model_to_use = "llama-3.2-11b-vision-preview"
-        is_vision = True
-        full_text = (user_text + combined_text) if (user_text or combined_text) else "Analizza questi file e immagine."
-        user_message_content = [
-            {"type": "text", "text": full_text},
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{first_image['mime']};base64,{first_image['base64']}"
+        full_text = (user_text + combined_text) if (user_text or combined_text) else "Analizza questo file/immagine."
+        current_msg = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": full_text},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{first_image['mime']};base64,{first_image['base64']}"}
                 }
-            }
-        ]
-        user_msg = {"role": "user", "content": user_message_content}
+            ]
+        }
     else:
-        user_text += combined_text
-        user_msg = {"role": "user", "content": user_text}
+        model_to_use = "llama-3.3-70b-versatile"
+        current_msg = {"role": "user", "content": user_text + combined_text}
 
-    st.session_state.messages.append(user_msg)
+    # Prepara gli storici passati puliti
+    past_clean_messages = sanitize_messages_for_api(st.session_state.messages)
     
+    # Costruisci la lista dei messaggi da inviare all'API
+    api_payload = [system_prompt] + past_clean_messages + [current_msg]
+
+    # Mostra subito a schermo
+    st.session_state.messages.append(current_msg)
     with st.chat_message("user"):
-        if first_image:
-            st.write(user_text)
-        else:
-            st.write(user_text)
+        st.write(user_text if user_text else "Inviato allegato")
 
     with st.spinner("Fixi sta elaborando..."):
-        # Pulisce i messaggi per l'API
-        clean_history = prepare_messages_for_groq(st.session_state.messages, is_vision_active=is_vision)
-        full_messages = [system_prompt] + clean_history
-        
-        risposta = client.chat.completions.create(
-            model=model_to_use,
-            messages=full_messages
-        )
-        testo_risposta = risposta.choices[0].message.content
-        
-        st.session_state.messages.append({"role": "assistant", "content": testo_risposta})
-        save_chat_history(st.session_state.messages)
-        
-        st.rerun()
+        try:
+            risposta = client.chat.completions.create(
+                model=model_to_use,
+                messages=api_payload
+            )
+            testo_risposta = risposta.choices[0].message.content
+            
+            st.session_state.messages.append({"role": "assistant", "content": testo_risposta})
+            save_chat_history(st.session_state.messages)
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"⚠️ **Errore API:** {e}\n\n*Consiglio: Prova a cliccare su '🗑️ Pulisci conversazione' in alto se il problema persiste.*")
