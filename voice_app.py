@@ -1,10 +1,12 @@
 import os
 import json
 import base64
+import io
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 from upstash_redis import Redis
+from pypdf import PdfReader
 
 # 1. Configurazione della pagina
 st.set_page_config(
@@ -29,9 +31,21 @@ client = OpenAI(
 # Connessione Redis
 redis = Redis(url=redis_url, token=redis_token) if (redis_url and redis_token) else None
 
-# 3. Funzione per leggere i file locali e di GitHub
+# Funzione per estrarre testo dai file PDF
+def extract_pdf_text(file_bytes):
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+        text = ""
+        for page in reader.pages:
+            extracted = page.extract_text()
+            if extracted:
+                text += extracted + "\n"
+        return text if text.strip() else "[PDF senza testo selezionabile o composto solo da immagini scansite]"
+    except Exception as e:
+        return f"[Errore durante la lettura del PDF: {e}]"
+
+# 3. Funzione per leggere la conoscenza da GitHub
 def load_github_knowledge():
-    """Legge tutti i file di testo (.txt, .md, .csv, .json) presenti nel repository."""
     knowledge = ""
     allowed_extensions = ('.txt', '.md', '.csv', '.json')
     ignored_files = {'requirements.txt'}
@@ -50,7 +64,7 @@ def load_github_knowledge():
         
     return knowledge
 
-# 4. Gestione della Memoria su Cloud
+# 4. Gestione Memoria Cloud
 def load_chat_history():
     if redis:
         try:
@@ -59,25 +73,22 @@ def load_chat_history():
                 return json.loads(data)
         except Exception:
             pass
-            
     return []
 
 def save_chat_history(messages):
     if redis:
         try:
-            # Pulisce le immagini prima del salvataggio su Redis per ottimizzare lo spazio
             clean_messages = []
             for m in messages:
                 if isinstance(m.get("content"), list):
                     text_parts = [p.get("text", "") for p in m["content"] if p.get("type") == "text"]
-                    clean_messages.append({"role": m["role"], "content": f"[Foto inviata] {' '.join(text_parts)}"})
+                    clean_messages.append({"role": m["role"], "content": f"[Allegato inviato] {' '.join(text_parts)}"})
                 else:
                     clean_messages.append(m)
             redis.set("fixi_chat_history", json.dumps(clean_messages, ensure_ascii=False))
         except Exception as e:
             st.error(f"Errore nel salvataggio della memoria cloud: {e}")
 
-# Inizializza la memoria
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
@@ -98,7 +109,7 @@ st.markdown("""
     }
 
     .block-container {
-        padding: 20px 20px 160px 20px !important; 
+        padding: 20px 20px 180px 20px !important; 
         max-width: 900px !important;
         margin: 0 auto !important;
     }
@@ -200,16 +211,16 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Caricamento conoscenza dai file su GitHub
+# Carica file generali dal repository
 github_docs = load_github_knowledge()
 
 system_prompt = {
     "role": "system",
-    "content": f"Sei Fixi, un'intelligenza artificiale minimale con capacità visive. Rispondi in modo chiaro, diretto e amichevole in italiano.\n"
+    "content": f"Sei Fixi, un'intelligenza artificiale minimale con capacità multimediali. Rispondi in modo chiaro, diretto e amichevole in italiano.\n"
                f"Hai accesso ai seguenti file di conoscenza del tuo proprietario:\n{github_docs}"
 }
 
-# Mostra i messaggi della chat
+# Mostra messaggi precedenti
 for message in st.session_state.messages:
     if message["role"] != "system":
         with st.chat_message(message["role"]):
@@ -222,45 +233,61 @@ for message in st.session_state.messages:
                     elif part.get("type") == "image_url":
                         st.image(part["image_url"]["url"], width=280)
 
-# Sezione allegati: Foto o Documenti
-col1, col2 = st.columns(2)
-with col1:
-    uploaded_image = st.file_uploader("📸 Invia una foto a Fixi", type=["jpg", "jpeg", "png", "webp"])
-with col2:
-    uploaded_file = st.file_uploader("📄 Allega un file di testo", type=["txt", "md", "csv", "json"])
+# Pulsante Tasto "+" per allegare qualsiasi file
+with st.popover("➕ Allega qualsiasi file (Foto, PDF, Codice, Documenti...)", use_container_width=True):
+    uploaded_file = st.file_uploader("Scegli un file dal tuo dispositivo", type=None)
 
+# Processa il file caricato
 uploaded_text_content = ""
-if uploaded_file is not None:
-    uploaded_text_content = uploaded_file.read().decode("utf-8")
-    st.success(f"File '{uploaded_file.name}' pronto!")
+is_image = False
+image_base64 = ""
+mime_type = ""
 
-if uploaded_image is not None:
-    st.image(uploaded_image, caption="Foto selezionata", width=180)
+if uploaded_file is not None:
+    file_name = uploaded_file.name
+    file_bytes = uploaded_file.getvalue()
+    file_ext = os.path.splitext(file_name)[1].lower()
+
+    if file_ext in [".jpg", ".jpeg", ".png", ".webp"]:
+        is_image = True
+        image_base64 = base64.b64encode(file_bytes).decode('utf-8')
+        mime_type = uploaded_file.type or f"image/{file_ext.replace('.', '')}"
+        st.info(f"📸 Immagine selezionata: **{file_name}**")
+        st.image(uploaded_file, width=200)
+
+    elif file_ext == ".pdf":
+        pdf_text = extract_pdf_text(file_bytes)
+        uploaded_text_content = f"\n\n[CONTENUTO PDF ALLEGATO - {file_name}]:\n{pdf_text}"
+        st.success(f"📄 PDF allegato con successo: **{file_name}**")
+
+    else:
+        try:
+            text_decoded = file_bytes.decode("utf-8", errors="ignore")
+            uploaded_text_content = f"\n\n[CONTENUTO FILE ALLEGATO - {file_name}]:\n{text_decoded}"
+            st.success(f"📁 File allegato con successo: **{file_name}**")
+        except Exception as e:
+            uploaded_text_content = f"\n\n[ALLEGATO BINARIO]: {file_name}"
+            st.warning(f"📦 File allegato: **{file_name}**")
 
 # Input della Chat
-prompt = st.chat_input("Scrivi un messaggio o chiedi qualcosa sulla foto...", accept_audio=True)
+prompt = st.chat_input("Scrivi un messaggio a Fixi...", accept_audio=True)
 
 if prompt:
     user_text = prompt.text if hasattr(prompt, "text") else str(prompt)
     
     if uploaded_text_content:
-        user_text += f"\n\n[FILE ALLEGATO - {uploaded_file.name}]:\n{uploaded_text_content}"
+        user_text += uploaded_text_content
         
     model_to_use = "llama-3.3-70b-versatile"
     
-    # Se è presente un'immagine, attiva la modalità Visiva
-    if uploaded_image is not None:
+    if is_image:
         model_to_use = "llama-3.2-11b-vision-preview"
-        bytes_data = uploaded_image.getvalue()
-        base64_image = base64.b64encode(bytes_data).decode('utf-8')
-        mime_type = uploaded_image.type
-        
         user_message_content = [
-            {"type": "text", "text": user_text if user_text else "Descrivi cosa vedi in questa immagine."},
+            {"type": "text", "text": user_text if user_text else "Analizza o descrivi questo file/immagine."},
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": f"data:{mime_type};base64,{base64_image}"
+                    "url": f"data:{mime_type};base64,{image_base64}"
                 }
             }
         ]
@@ -271,13 +298,13 @@ if prompt:
     st.session_state.messages.append(user_msg)
     
     with st.chat_message("user"):
-        if isinstance(user_msg["content"], list):
-            st.write(user_text if user_text else "Descrivi cosa vedi in questa immagine.")
-            st.image(uploaded_image, width=250)
+        if is_image:
+            st.write(user_text if user_text else "Analizza o descrivi questo file/immagine.")
+            st.image(uploaded_file, width=220)
         else:
             st.write(user_text)
 
-    with st.spinner("Fixi sta analizzando la foto..."):
+    with st.spinner("Fixi sta elaborando..."):
         full_messages = [system_prompt] + st.session_state.messages
         
         risposta = client.chat.completions.create(
