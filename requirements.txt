@@ -3,3 +3,8 @@ openai
 python-dotenv
 upstash-redis
 pypdf
+python-docx
+pandas
+openpyxl
+python-pptx
+tabulate
