@@ -1,8 +1,10 @@
 import os
 import json
+import base64
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
+from upstash_redis import Redis
 
 # 1. Configurazione della pagina
 st.set_page_config(
@@ -12,54 +14,74 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 2. Definizione del percorso ASSOLUTO per il file della cronologia
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE = os.path.join(SCRIPT_DIR, "chat_history.json")
-
-# 3. Caricamento API Key
+# 2. Caricamento variabili d'ambiente
 load_dotenv()
-api_key = os.getenv("API_KEY")
+
+api_key = st.secrets.get("API_KEY") or os.getenv("API_KEY")
+redis_url = st.secrets.get("UPSTASH_REDIS_REST_URL") or os.getenv("UPSTASH_REDIS_REST_URL")
+redis_token = st.secrets.get("UPSTASH_REDIS_REST_TOKEN") or os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
 client = OpenAI(
     api_key=api_key,
     base_url="https://api.groq.com/openai/v1"
 )
 
-# 4. Funzioni per salvataggio e caricamento permanente
-def save_chat_history(messages):
-    """Salva la cronologia corrente nel file JSON."""
-    try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(messages, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        st.error(f"Errore durante il salvataggio: {e}")
+# Connessione Redis
+redis = Redis(url=redis_url, token=redis_token) if (redis_url and redis_token) else None
 
+# 3. Funzione per leggere i file locali e di GitHub
+def load_github_knowledge():
+    """Legge tutti i file di testo (.txt, .md, .csv, .json) presenti nel repository."""
+    knowledge = ""
+    allowed_extensions = ('.txt', '.md', '.csv', '.json')
+    ignored_files = {'requirements.txt'}
+
+    try:
+        for file in os.listdir("."):
+            if file.endswith(allowed_extensions) and file not in ignored_files:
+                try:
+                    with open(file, "r", encoding="utf-8") as f:
+                        content = f.read()
+                        knowledge += f"\n--- CONTENUTO FILE '{file}' ---\n{content}\n"
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"Errore lettura file: {e}")
+        
+    return knowledge
+
+# 4. Gestione della Memoria su Cloud
 def load_chat_history():
-    """Carica i messaggi salvati su file o ne crea uno nuovo subito."""
-    if os.path.exists(HISTORY_FILE):
+    if redis:
         try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list) and len(data) > 0:
-                    return data
+            data = redis.get("fixi_chat_history")
+            if data:
+                return json.loads(data)
         except Exception:
             pass
             
-    # Se il file non esiste o è corrotto, creiamo la struttura iniziale e IL FILE SUBITO
-    initial_messages = [
-        {
-            "role": "system",
-            "content": "Sei Fixi, un'intelligenza artificiale minimale. Rispondi in modo chiaro, diretto e amichevole in italiano."
-        }
-    ]
-    save_chat_history(initial_messages)
-    return initial_messages
+    return []
 
-# Inizializza la memoria caricando i dati salvati su disco
+def save_chat_history(messages):
+    if redis:
+        try:
+            # Pulisce le immagini prima del salvataggio su Redis per ottimizzare lo spazio
+            clean_messages = []
+            for m in messages:
+                if isinstance(m.get("content"), list):
+                    text_parts = [p.get("text", "") for p in m["content"] if p.get("type") == "text"]
+                    clean_messages.append({"role": m["role"], "content": f"[Foto inviata] {' '.join(text_parts)}"})
+                else:
+                    clean_messages.append(m)
+            redis.set("fixi_chat_history", json.dumps(clean_messages, ensure_ascii=False))
+        except Exception as e:
+            st.error(f"Errore nel salvataggio della memoria cloud: {e}")
+
+# Inizializza la memoria
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-# 5. Layout e Stili CSS
+# 5. Stili CSS
 st.markdown("""
 <style>
     * { box-sizing: border-box; }
@@ -76,12 +98,11 @@ st.markdown("""
     }
 
     .block-container {
-        padding: 20px 20px 140px 20px !important; 
+        padding: 20px 20px 160px 20px !important; 
         max-width: 900px !important;
         margin: 0 auto !important;
     }
 
-    /* SFONDO GLOW */
     .glow-purple {
         position: fixed; bottom: -10%; left: -5%; width: 500px; height: 500px;
         background: radial-gradient(circle, rgba(70, 45, 140, 0.2) 0%, rgba(13, 15, 20, 0) 70%);
@@ -93,7 +114,6 @@ st.markdown("""
         pointer-events: none; z-index: 1;
     }
 
-    /* HEADER */
     .header-section {
         display: flex; flex-direction: column; align-items: center; margin-bottom: 25px; z-index: 5;
     }
@@ -123,14 +143,12 @@ st.markdown("""
     }
 
     @keyframes waveMorph1 {
-        0% { transform: rotate(0deg) scale(0.97); border-radius: 42% 58% 60% 40% / 45% 55% 45% 55%; }
-        50% { transform: rotate(180deg) scale(1.02); border-radius: 58% 42% 40% 60% / 55% 45% 55% 45%; }
-        100% { transform: rotate(360deg) scale(0.97); border-radius: 42% 58% 60% 40% / 45% 55% 45% 55%; }
+        0% { transform: rotate(0deg) scale(0.97); }
+        100% { transform: rotate(360deg) scale(0.97); }
     }
     @keyframes waveMorph2 {
-        0% { transform: rotate(0deg) scale(1.01); border-radius: 55% 45% 38% 62% / 50% 42% 58% 50%; }
-        50% { transform: rotate(-180deg) scale(0.96); border-radius: 40% 60% 55% 45% / 45% 55% 42% 58%; }
-        100% { transform: rotate(-360deg) scale(1.01); border-radius: 55% 45% 38% 62% / 50% 42% 58% 50%; }
+        0% { transform: rotate(0deg) scale(1.01); }
+        100% { transform: rotate(-360deg) scale(1.01); }
     }
     @keyframes waveMorph3 {
         0% { transform: rotate(0deg) scale(0.98); }
@@ -138,7 +156,6 @@ st.markdown("""
     }
     .status-text { font-size: 11px; color: rgba(255, 255, 255, 0.6); }
 
-    /* MESSAGGI */
     div[data-testid="stChatMessage"] {
         background: rgba(255, 255, 255, 0.015);
         border: 1px solid rgba(255, 255, 255, 0.05);
@@ -148,7 +165,6 @@ st.markdown("""
         z-index: 5;
     }
 
-    /* INPUT CHAT FISSO IN BASSO */
     div[data-testid="stChatInput"] {
         position: fixed !important;
         bottom: 25px !important;
@@ -172,7 +188,7 @@ st.markdown("""
 <div class="glow-cyan"></div>
 """, unsafe_allow_html=True)
 
-# Header (Animazione e Status)
+# Header
 st.markdown("""
 <div class="header-section">
     <div class="waveform-container">
@@ -184,53 +200,93 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Mostra tutti i messaggi caricati dal file
+# Caricamento conoscenza dai file su GitHub
+github_docs = load_github_knowledge()
+
+system_prompt = {
+    "role": "system",
+    "content": f"Sei Fixi, un'intelligenza artificiale minimale con capacità visive. Rispondi in modo chiaro, diretto e amichevole in italiano.\n"
+               f"Hai accesso ai seguenti file di conoscenza del tuo proprietario:\n{github_docs}"
+}
+
+# Mostra i messaggi della chat
 for message in st.session_state.messages:
     if message["role"] != "system":
         with st.chat_message(message["role"]):
-            st.write(message["content"])
+            if isinstance(message["content"], str):
+                st.write(message["content"])
+            elif isinstance(message["content"], list):
+                for part in message["content"]:
+                    if part.get("type") == "text":
+                        st.write(part["text"])
+                    elif part.get("type") == "image_url":
+                        st.image(part["image_url"]["url"], width=280)
 
-# Auto-scroll verso il basso
-st.markdown("""
-<div id="chat-end"></div>
-<script>
-    function forceScrollBottom() {
-        var endElement = document.getElementById("chat-end");
-        if (endElement) {
-            endElement.scrollIntoView({ behavior: "smooth", block: "end" });
-        }
-        var mainContainer = window.parent.document.querySelector('.main');
-        if (mainContainer) {
-            mainContainer.scrollTop = mainContainer.scrollHeight;
-        }
-    }
-    setTimeout(forceScrollBottom, 150);
-</script>
-""", unsafe_allow_html=True)
+# Sezione allegati: Foto o Documenti
+col1, col2 = st.columns(2)
+with col1:
+    uploaded_image = st.file_uploader("📸 Invia una foto a Fixi", type=["jpg", "jpeg", "png", "webp"])
+with col2:
+    uploaded_file = st.file_uploader("📄 Allega un file di testo", type=["txt", "md", "csv", "json"])
 
-# Input Chat
-prompt = st.chat_input("Scrivi un messaggio o parla...", accept_audio=True)
+uploaded_text_content = ""
+if uploaded_file is not None:
+    uploaded_text_content = uploaded_file.read().decode("utf-8")
+    st.success(f"File '{uploaded_file.name}' pronto!")
 
-# Logica di risposta dell'IA
+if uploaded_image is not None:
+    st.image(uploaded_image, caption="Foto selezionata", width=180)
+
+# Input della Chat
+prompt = st.chat_input("Scrivi un messaggio o chiedi qualcosa sulla foto...", accept_audio=True)
+
 if prompt:
     user_text = prompt.text if hasattr(prompt, "text") else str(prompt)
-    if user_text:
-        # Aggiunge e salva subito il messaggio dell'utente
-        st.session_state.messages.append({"role": "user", "content": user_text})
+    
+    if uploaded_text_content:
+        user_text += f"\n\n[FILE ALLEGATO - {uploaded_file.name}]:\n{uploaded_text_content}"
+        
+    model_to_use = "llama-3.3-70b-versatile"
+    
+    # Se è presente un'immagine, attiva la modalità Visiva
+    if uploaded_image is not None:
+        model_to_use = "llama-3.2-11b-vision-preview"
+        bytes_data = uploaded_image.getvalue()
+        base64_image = base64.b64encode(bytes_data).decode('utf-8')
+        mime_type = uploaded_image.type
+        
+        user_message_content = [
+            {"type": "text", "text": user_text if user_text else "Descrivi cosa vedi in questa immagine."},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{mime_type};base64,{base64_image}"
+                }
+            }
+        ]
+        user_msg = {"role": "user", "content": user_message_content}
+    else:
+        user_msg = {"role": "user", "content": user_text}
+
+    st.session_state.messages.append(user_msg)
+    
+    with st.chat_message("user"):
+        if isinstance(user_msg["content"], list):
+            st.write(user_text if user_text else "Descrivi cosa vedi in questa immagine.")
+            st.image(uploaded_image, width=250)
+        else:
+            st.write(user_text)
+
+    with st.spinner("Fixi sta analizzando la foto..."):
+        full_messages = [system_prompt] + st.session_state.messages
+        
+        risposta = client.chat.completions.create(
+            model=model_to_use,
+            messages=full_messages
+        )
+        testo_risposta = risposta.choices[0].message.content
+        
+        st.session_state.messages.append({"role": "assistant", "content": testo_risposta})
         save_chat_history(st.session_state.messages)
         
-        with st.chat_message("user"):
-            st.write(user_text)
-            
-        with st.spinner("Fixi sta elaborando..."):
-            risposta = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=st.session_state.messages
-            )
-            testo_risposta = risposta.choices[0].message.content
-            
-            # Aggiunge e salva subito la risposta dell'IA
-            st.session_state.messages.append({"role": "assistant", "content": testo_risposta})
-            save_chat_history(st.session_state.messages)
-            
-            st.rerun()
+        st.rerun()
