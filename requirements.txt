@@ -2,3 +2,4 @@ streamlit
 openai
 python-dotenv
 upstash-redis
+pypdf
