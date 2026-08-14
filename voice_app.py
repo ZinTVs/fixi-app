@@ -6,7 +6,12 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 from upstash_redis import Redis
+
+# Librerie per la lettura dei vari tipi di file
 from pypdf import PdfReader
+import docx
+import pandas as pd
+from pptx import Presentation
 
 # 1. Configurazione della pagina
 st.set_page_config(
@@ -31,20 +36,105 @@ client = OpenAI(
 # Connessione Redis
 redis = Redis(url=redis_url, token=redis_token) if (redis_url and redis_token) else None
 
-# Funzione per estrarre testo dai file PDF
-def extract_pdf_text(file_bytes):
-    try:
-        reader = PdfReader(io.BytesIO(file_bytes))
-        text = ""
-        for page in reader.pages:
-            extracted = page.extract_text()
-            if extracted:
-                text += extracted + "\n"
-        return text if text.strip() else "[PDF senza testo selezionabile o composto solo da immagini scansite]"
-    except Exception as e:
-        return f"[Errore durante la lettura del PDF: {e}]"
+# 3. Funzione Universale per Processare QUALSIASI File
+def process_uploaded_file(uploaded_file, openai_client):
+    file_name = uploaded_file.name
+    file_bytes = uploaded_file.getvalue()
+    file_ext = os.path.splitext(file_name)[1].lower()
 
-# 3. Funzione per leggere la conoscenza da GitHub
+    # --- A. IMMAGINI ---
+    if file_ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"]:
+        base64_img = base64.b64encode(file_bytes).decode('utf-8')
+        mime = uploaded_file.type or f"image/{file_ext.replace('.', '')}"
+        return {
+            "is_image": True,
+            "base64": base64_img,
+            "mime": mime,
+            "name": file_name,
+            "info": f"📸 Immagine allegata: **{file_name}**"
+        }
+
+    # --- B. FILE AUDIO (Trascrizione automatica con Groq Whisper) ---
+    elif file_ext in [".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac"]:
+        try:
+            audio_file = (file_name, file_bytes, uploaded_file.type or "audio/mpeg")
+            transcription = openai_client.audio.transcriptions.create(
+                model="whisper-large-v3-turbo",
+                file=audio_file
+            )
+            text_content = f"\n\n[TRASCRIZIONE AUDIO ALLEGATO '{file_name}']:\n{transcription.text}"
+            return {"is_image": False, "text": text_content, "info": f"🎙️ Audio **{file_name}** trascritto con successo!"}
+        except Exception as e:
+            return {"is_image": False, "text": f"\n\n[FILE AUDIO '{file_name}' - Errore trascrizione: {e}]", "info": f"⚠️ Impossibile trascrivere l'audio: {e}"}
+
+    # --- C. DOCUMENTI PDF ---
+    elif file_ext == ".pdf":
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes))
+            text = "\n".join([page.extract_text() or "" for page in reader.pages]).strip()
+            if not text:
+                text = "[PDF scansionato o privo di testo selezionabile]"
+            return {"is_image": False, "text": f"\n\n[CONTENUTO PDF '{file_name}']:\n{text}", "info": f"📄 PDF **{file_name}** letto!"}
+        except Exception as e:
+            return {"is_image": False, "text": f"\n\n[PDF '{file_name}']: Errore lettura ({e})", "info": "⚠️ Errore lettura PDF"}
+
+    # --- D. DOCUMENTI WORD (.docx) ---
+    elif file_ext in [".docx", ".doc"]:
+        try:
+            doc = docx.Document(io.BytesIO(file_bytes))
+            text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            return {"is_image": False, "text": f"\n\n[CONTENUTO WORD '{file_name}']:\n{text}", "info": f"📝 Documento Word **{file_name}** letto!"}
+        except Exception as e:
+            return {"is_image": False, "text": f"\n\n[WORD '{file_name}']: Errore ({e})", "info": "⚠️ Errore lettura Word"}
+
+    # --- E. EXCEL E CSV (.xlsx, .xls, .csv) ---
+    elif file_ext in [".xlsx", ".xls", ".csv"]:
+        try:
+            if file_ext == ".csv":
+                df = pd.read_csv(io.BytesIO(file_bytes))
+            else:
+                df = pd.read_excel(io.BytesIO(file_bytes))
+            table_str = df.head(100).to_markdown(index=False)
+            info_str = f"Visualizzate prime 100 righe su {len(df)}" if len(df) > 100 else f"{len(df)} righe"
+            return {"is_image": False, "text": f"\n\n[TABELLA EXCEL/CSV '{file_name}' ({info_str})]:\n{table_str}", "info": f"📊 Tabella **{file_name}** letta!"}
+        except Exception as e:
+            return {"is_image": False, "text": f"\n\n[TABELLA '{file_name}']: Errore ({e})", "info": "⚠️ Errore lettura tabella"}
+
+    # --- F. POWERPOINT (.pptx) ---
+    elif file_ext == ".pptx":
+        try:
+            prs = Presentation(io.BytesIO(file_bytes))
+            text_runs = []
+            for i, slide in enumerate(prs.slides, 1):
+                slide_text = [shape.text.strip() for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
+                if slide_text:
+                    text_runs.append(f"--- Diapositiva {i} ---\n" + "\n".join(slide_text))
+            text = "\n\n".join(text_runs)
+            return {"is_image": False, "text": f"\n\n[CONTENUTO POWERPOINT '{file_name}']:\n{text}", "info": f"📊 PowerPoint **{file_name}** letto!"}
+        except Exception as e:
+            return {"is_image": False, "text": f"\n\n[POWERPOINT '{file_name}']: Errore ({e})", "info": "⚠️ Errore lettura PowerPoint"}
+
+    # --- G. TESTO / CODICE GENERALI (.txt, .md, .py, .json, .html, .js, .css, .sql, .xml, ecc.) ---
+    try:
+        text = file_bytes.decode("utf-8")
+        return {"is_image": False, "text": f"\n\n[CONTENUTO FILE '{file_name}']:\n{text}", "info": f"📄 File **{file_name}** letto!"}
+    except UnicodeDecodeError:
+        try:
+            text = file_bytes.decode("latin-1")
+            return {"is_image": False, "text": f"\n\n[CONTENUTO FILE '{file_name}']:\n{text}", "info": f"📄 File **{file_name}** letto!"}
+        except Exception:
+            pass
+
+    # --- H. FILE BINARI GENERICI (ZIP, RAR, EXE, BIN...) ---
+    size_kb = round(len(file_bytes) / 1024, 2)
+    return {
+        "is_image": False,
+        "text": f"\n\n[ALLEGATO BINARIO - Nome: '{file_name}', Dimensione: {size_kb} KB, Tipo: {uploaded_file.type or 'sconosciuto'}]. "
+                f"L'utente ha allegato un file binario non leggibile direttamente come testo.",
+        "info": f"📦 File allegato: **{file_name}** ({size_kb} KB)"
+    }
+
+# 4. Conoscenza da GitHub
 def load_github_knowledge():
     knowledge = ""
     allowed_extensions = ('.txt', '.md', '.csv', '.json')
@@ -64,7 +154,7 @@ def load_github_knowledge():
         
     return knowledge
 
-# 4. Gestione Memoria Cloud
+# 5. Gestione Memoria Cloud
 def load_chat_history():
     if redis:
         try:
@@ -92,7 +182,7 @@ def save_chat_history(messages):
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-# 5. Stili CSS
+# 6. Stili CSS
 st.markdown("""
 <style>
     * { box-sizing: border-box; }
@@ -211,16 +301,15 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Carica file generali dal repository
 github_docs = load_github_knowledge()
 
 system_prompt = {
     "role": "system",
-    "content": f"Sei Fixi, un'intelligenza artificiale minimale con capacità multimediali. Rispondi in modo chiaro, diretto e amichevole in italiano.\n"
+    "content": f"Sei Fixi, un'intelligenza artificiale minimale con supporto multimediale completo. Rispondi in modo chiaro, diretto e amichevole in italiano.\n"
                f"Hai accesso ai seguenti file di conoscenza del tuo proprietario:\n{github_docs}"
 }
 
-# Mostra messaggi precedenti
+# Mostra i messaggi precedenti
 for message in st.session_state.messages:
     if message["role"] != "system":
         with st.chat_message(message["role"]):
@@ -234,40 +323,15 @@ for message in st.session_state.messages:
                         st.image(part["image_url"]["url"], width=280)
 
 # Pulsante Tasto "+" per allegare qualsiasi file
-with st.popover("➕ Allega qualsiasi file (Foto, PDF, Codice, Documenti...)", use_container_width=True):
-    uploaded_file = st.file_uploader("Scegli un file dal tuo dispositivo", type=None)
+with st.popover("➕ Allega qualsiasi file (Foto, Audio, PDF, Word, Excel, Codice...)", use_container_width=True):
+    uploaded_file = st.file_uploader("Scegli qualsiasi file dal tuo dispositivo", type=None)
 
-# Processa il file caricato
-uploaded_text_content = ""
-is_image = False
-image_base64 = ""
-mime_type = ""
-
+file_result = None
 if uploaded_file is not None:
-    file_name = uploaded_file.name
-    file_bytes = uploaded_file.getvalue()
-    file_ext = os.path.splitext(file_name)[1].lower()
-
-    if file_ext in [".jpg", ".jpeg", ".png", ".webp"]:
-        is_image = True
-        image_base64 = base64.b64encode(file_bytes).decode('utf-8')
-        mime_type = uploaded_file.type or f"image/{file_ext.replace('.', '')}"
-        st.info(f"📸 Immagine selezionata: **{file_name}**")
+    file_result = process_uploaded_file(uploaded_file, client)
+    st.info(file_result["info"])
+    if file_result.get("is_image"):
         st.image(uploaded_file, width=200)
-
-    elif file_ext == ".pdf":
-        pdf_text = extract_pdf_text(file_bytes)
-        uploaded_text_content = f"\n\n[CONTENUTO PDF ALLEGATO - {file_name}]:\n{pdf_text}"
-        st.success(f"📄 PDF allegato con successo: **{file_name}**")
-
-    else:
-        try:
-            text_decoded = file_bytes.decode("utf-8", errors="ignore")
-            uploaded_text_content = f"\n\n[CONTENUTO FILE ALLEGATO - {file_name}]:\n{text_decoded}"
-            st.success(f"📁 File allegato con successo: **{file_name}**")
-        except Exception as e:
-            uploaded_text_content = f"\n\n[ALLEGATO BINARIO]: {file_name}"
-            st.warning(f"📦 File allegato: **{file_name}**")
 
 # Input della Chat
 prompt = st.chat_input("Scrivi un messaggio a Fixi...", accept_audio=True)
@@ -275,31 +339,32 @@ prompt = st.chat_input("Scrivi un messaggio a Fixi...", accept_audio=True)
 if prompt:
     user_text = prompt.text if hasattr(prompt, "text") else str(prompt)
     
-    if uploaded_text_content:
-        user_text += uploaded_text_content
-        
     model_to_use = "llama-3.3-70b-versatile"
     
-    if is_image:
-        model_to_use = "llama-3.2-11b-vision-preview"
-        user_message_content = [
-            {"type": "text", "text": user_text if user_text else "Analizza o descrivi questo file/immagine."},
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:{mime_type};base64,{image_base64}"
+    if file_result:
+        if file_result.get("is_image"):
+            model_to_use = "llama-3.2-11b-vision-preview"
+            user_message_content = [
+                {"type": "text", "text": user_text if user_text else "Analizza o descrivi questo file/immagine."},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{file_result['mime']};base64,{file_result['base64']}"
+                    }
                 }
-            }
-        ]
-        user_msg = {"role": "user", "content": user_message_content}
+            ]
+            user_msg = {"role": "user", "content": user_message_content}
+        else:
+            user_text += file_result.get("text", "")
+            user_msg = {"role": "user", "content": user_text}
     else:
         user_msg = {"role": "user", "content": user_text}
 
     st.session_state.messages.append(user_msg)
     
     with st.chat_message("user"):
-        if is_image:
-            st.write(user_text if user_text else "Analizza o descrivi questo file/immagine.")
+        if file_result and file_result.get("is_image"):
+            st.write(user_text if user_text else "Analizza o descrivi questa immagine.")
             st.image(uploaded_file, width=220)
         else:
             st.write(user_text)
