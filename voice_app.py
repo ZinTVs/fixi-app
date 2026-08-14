@@ -33,7 +33,6 @@ client = OpenAI(
     base_url="https://api.groq.com/openai/v1"
 )
 
-# Connessione Redis
 redis = Redis(url=redis_url, token=redis_token) if (redis_url and redis_token) else None
 
 # 3. Funzione Universale per Processare QUALSIASI File
@@ -51,10 +50,10 @@ def process_uploaded_file(uploaded_file, openai_client):
             "base64": base64_img,
             "mime": mime,
             "name": file_name,
-            "info": f"📸 Immagine allegata: **{file_name}**"
+            "info": f"📸 Immagine: **{file_name}**"
         }
 
-    # --- B. FILE AUDIO (Trascrizione automatica con Groq Whisper) ---
+    # --- B. FILE AUDIO (Trascrizione automatica Whisper) ---
     elif file_ext in [".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac"]:
         try:
             audio_file = (file_name, file_bytes, uploaded_file.type or "audio/mpeg")
@@ -62,10 +61,10 @@ def process_uploaded_file(uploaded_file, openai_client):
                 model="whisper-large-v3-turbo",
                 file=audio_file
             )
-            text_content = f"\n\n[TRASCRIZIONE AUDIO ALLEGATO '{file_name}']:\n{transcription.text}"
-            return {"is_image": False, "text": text_content, "info": f"🎙️ Audio **{file_name}** trascritto con successo!"}
+            text_content = f"\n\n[TRASCRIZIONE AUDIO '{file_name}']:\n{transcription.text}"
+            return {"is_image": False, "text": text_content, "info": f"🎙️ Audio **{file_name}** trascritto!"}
         except Exception as e:
-            return {"is_image": False, "text": f"\n\n[FILE AUDIO '{file_name}' - Errore trascrizione: {e}]", "info": f"⚠️ Impossibile trascrivere l'audio: {e}"}
+            return {"is_image": False, "text": f"\n\n[AUDIO '{file_name}' - Errore: {e}]", "info": f"⚠️ Errore audio: {file_name}"}
 
     # --- C. DOCUMENTI PDF ---
     elif file_ext == ".pdf":
@@ -74,18 +73,18 @@ def process_uploaded_file(uploaded_file, openai_client):
             text = "\n".join([page.extract_text() or "" for page in reader.pages]).strip()
             if not text:
                 text = "[PDF scansionato o privo di testo selezionabile]"
-            return {"is_image": False, "text": f"\n\n[CONTENUTO PDF '{file_name}']:\n{text}", "info": f"📄 PDF **{file_name}** letto!"}
+            return {"is_image": False, "text": f"\n\n[CONTENUTO PDF '{file_name}']:\n{text}", "info": f"📄 PDF **{file_name}**"}
         except Exception as e:
-            return {"is_image": False, "text": f"\n\n[PDF '{file_name}']: Errore lettura ({e})", "info": "⚠️ Errore lettura PDF"}
+            return {"is_image": False, "text": f"\n\n[PDF '{file_name}']: Errore ({e})", "info": f"⚠️ Errore PDF: {file_name}"}
 
     # --- D. DOCUMENTI WORD (.docx) ---
     elif file_ext in [".docx", ".doc"]:
         try:
             doc = docx.Document(io.BytesIO(file_bytes))
             text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-            return {"is_image": False, "text": f"\n\n[CONTENUTO WORD '{file_name}']:\n{text}", "info": f"📝 Documento Word **{file_name}** letto!"}
+            return {"is_image": False, "text": f"\n\n[CONTENUTO WORD '{file_name}']:\n{text}", "info": f"📝 Word **{file_name}**"}
         except Exception as e:
-            return {"is_image": False, "text": f"\n\n[WORD '{file_name}']: Errore ({e})", "info": "⚠️ Errore lettura Word"}
+            return {"is_image": False, "text": f"\n\n[WORD '{file_name}']: Errore ({e})", "info": f"⚠️ Errore Word: {file_name}"}
 
     # --- E. EXCEL E CSV (.xlsx, .xls, .csv) ---
     elif file_ext in [".xlsx", ".xls", ".csv"]:
@@ -95,10 +94,9 @@ def process_uploaded_file(uploaded_file, openai_client):
             else:
                 df = pd.read_excel(io.BytesIO(file_bytes))
             table_str = df.head(100).to_markdown(index=False)
-            info_str = f"Visualizzate prime 100 righe su {len(df)}" if len(df) > 100 else f"{len(df)} righe"
-            return {"is_image": False, "text": f"\n\n[TABELLA EXCEL/CSV '{file_name}' ({info_str})]:\n{table_str}", "info": f"📊 Tabella **{file_name}** letta!"}
+            return {"is_image": False, "text": f"\n\n[TABELLA '{file_name}']:\n{table_str}", "info": f"📊 Tabella **{file_name}**"}
         except Exception as e:
-            return {"is_image": False, "text": f"\n\n[TABELLA '{file_name}']: Errore ({e})", "info": "⚠️ Errore lettura tabella"}
+            return {"is_image": False, "text": f"\n\n[TABELLA '{file_name}']: Errore ({e})", "info": f"⚠️ Errore tabella: {file_name}"}
 
     # --- F. POWERPOINT (.pptx) ---
     elif file_ext == ".pptx":
@@ -108,30 +106,29 @@ def process_uploaded_file(uploaded_file, openai_client):
             for i, slide in enumerate(prs.slides, 1):
                 slide_text = [shape.text.strip() for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
                 if slide_text:
-                    text_runs.append(f"--- Diapositiva {i} ---\n" + "\n".join(slide_text))
+                    text_runs.append(f"--- Slide {i} ---\n" + "\n".join(slide_text))
             text = "\n\n".join(text_runs)
-            return {"is_image": False, "text": f"\n\n[CONTENUTO POWERPOINT '{file_name}']:\n{text}", "info": f"📊 PowerPoint **{file_name}** letto!"}
+            return {"is_image": False, "text": f"\n\n[POWERPOINT '{file_name}']:\n{text}", "info": f"📊 PowerPoint **{file_name}**"}
         except Exception as e:
-            return {"is_image": False, "text": f"\n\n[POWERPOINT '{file_name}']: Errore ({e})", "info": "⚠️ Errore lettura PowerPoint"}
+            return {"is_image": False, "text": f"\n\n[POWERPOINT '{file_name}']: Errore ({e})", "info": f"⚠️ Errore PPT: {file_name}"}
 
-    # --- G. TESTO / CODICE GENERALI (.txt, .md, .py, .json, .html, .js, .css, .sql, .xml, ecc.) ---
+    # --- G. CODICE E TESTO (LUA, HTML, CSS, JS, PY, JSON, XML, TXT, ecc.) ---
     try:
         text = file_bytes.decode("utf-8")
-        return {"is_image": False, "text": f"\n\n[CONTENUTO FILE '{file_name}']:\n{text}", "info": f"📄 File **{file_name}** letto!"}
+        return {"is_image": False, "text": f"\n\n[FILE CODICE/TESTO '{file_name}']:\n{text}", "info": f"💻 File **{file_name}**"}
     except UnicodeDecodeError:
         try:
             text = file_bytes.decode("latin-1")
-            return {"is_image": False, "text": f"\n\n[CONTENUTO FILE '{file_name}']:\n{text}", "info": f"📄 File **{file_name}** letto!"}
+            return {"is_image": False, "text": f"\n\n[FILE CODICE/TESTO '{file_name}']:\n{text}", "info": f"💻 File **{file_name}**"}
         except Exception:
             pass
 
-    # --- H. FILE BINARI GENERICI (ZIP, RAR, EXE, BIN...) ---
+    # --- H. FILE BINARI GENERICI ---
     size_kb = round(len(file_bytes) / 1024, 2)
     return {
         "is_image": False,
-        "text": f"\n\n[ALLEGATO BINARIO - Nome: '{file_name}', Dimensione: {size_kb} KB, Tipo: {uploaded_file.type or 'sconosciuto'}]. "
-                f"L'utente ha allegato un file binario non leggibile direttamente come testo.",
-        "info": f"📦 File allegato: **{file_name}** ({size_kb} KB)"
+        "text": f"\n\n[ALLEGATO BINARIO - Nome: '{file_name}', Dimensione: {size_kb} KB]",
+        "info": f"📦 File **{file_name}** ({size_kb} KB)"
     }
 
 # 4. Conoscenza da GitHub
@@ -305,7 +302,7 @@ github_docs = load_github_knowledge()
 
 system_prompt = {
     "role": "system",
-    "content": f"Sei Fixi, un'intelligenza artificiale minimale con supporto multimediale completo. Rispondi in modo chiaro, diretto e amichevole in italiano.\n"
+    "content": f"Sei Fixi, un'intelligenza artificiale minimale ed esperta di programmazione e file di sistema. Rispondi in modo chiaro, diretto e amichevole in italiano.\n"
                f"Hai accesso ai seguenti file di conoscenza del tuo proprietario:\n{github_docs}"
 }
 
@@ -322,54 +319,59 @@ for message in st.session_state.messages:
                     elif part.get("type") == "image_url":
                         st.image(part["image_url"]["url"], width=280)
 
-# Pulsante Tasto "+" per allegare qualsiasi file
-with st.popover("➕ Allega qualsiasi file (Foto, Audio, PDF, Word, Excel, Codice...)", use_container_width=True):
-    uploaded_file = st.file_uploader("Scegli qualsiasi file dal tuo dispositivo", type=None)
+# Pulsante Tasto "+" per allegare PIÙ FILE contemporaneamente
+with st.popover("➕ Allega file (seleziona o trascina più file insieme)", use_container_width=True):
+    uploaded_files = st.file_uploader(
+        "Scegli uno o più file dal tuo dispositivo", 
+        type=None, 
+        accept_multiple_files=True
+    )
 
-file_result = None
-if uploaded_file is not None:
-    file_result = process_uploaded_file(uploaded_file, client)
-    st.info(file_result["info"])
-    if file_result.get("is_image"):
-        st.image(uploaded_file, width=200)
+combined_text = ""
+first_image = None
+
+if uploaded_files:
+    for u_file in uploaded_files:
+        res = process_uploaded_file(u_file, client)
+        st.write(res["info"])
+        if res.get("is_image") and not first_image:
+            first_image = res
+        elif not res.get("is_image"):
+            combined_text += res.get("text", "")
 
 # Input della Chat
 prompt = st.chat_input("Scrivi un messaggio a Fixi...", accept_audio=True)
 
 if prompt:
     user_text = prompt.text if hasattr(prompt, "text") else str(prompt)
-    
     model_to_use = "llama-3.3-70b-versatile"
     
-    if file_result:
-        if file_result.get("is_image"):
-            model_to_use = "llama-3.2-11b-vision-preview"
-            user_message_content = [
-                {"type": "text", "text": user_text if user_text else "Analizza o descrivi questo file/immagine."},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:{file_result['mime']};base64,{file_result['base64']}"
-                    }
+    if first_image:
+        model_to_use = "llama-3.2-11b-vision-preview"
+        full_text = (user_text + combined_text) if (user_text or combined_text) else "Analizza questi file e immagine."
+        user_message_content = [
+            {"type": "text", "text": full_text},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:{first_image['mime']};base64,{first_image['base64']}"
                 }
-            ]
-            user_msg = {"role": "user", "content": user_message_content}
-        else:
-            user_text += file_result.get("text", "")
-            user_msg = {"role": "user", "content": user_text}
+            }
+        ]
+        user_msg = {"role": "user", "content": user_message_content}
     else:
+        user_text += combined_text
         user_msg = {"role": "user", "content": user_text}
 
     st.session_state.messages.append(user_msg)
     
     with st.chat_message("user"):
-        if file_result and file_result.get("is_image"):
-            st.write(user_text if user_text else "Analizza o descrivi questa immagine.")
-            st.image(uploaded_file, width=220)
+        if first_image:
+            st.write(user_text)
         else:
             st.write(user_text)
 
-    with st.spinner("Fixi sta elaborando..."):
+    with st.spinner("Fixi sta analizzando i file..."):
         full_messages = [system_prompt] + st.session_state.messages
         
         risposta = client.chat.completions.create(
