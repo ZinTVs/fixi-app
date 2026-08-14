@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from upstash_redis import Redis
 
-# Librerie per la lettura dei vari tipi di file
+# Librerie per la lettura dei file
 from pypdf import PdfReader
 import docx
 import pandas as pd
@@ -41,7 +41,7 @@ def process_uploaded_file(uploaded_file, openai_client):
     file_bytes = uploaded_file.getvalue()
     file_ext = os.path.splitext(file_name)[1].lower()
 
-    # --- A. IMMAGINI ---
+    # IMMAGINI
     if file_ext in [".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"]:
         base64_img = base64.b64encode(file_bytes).decode('utf-8')
         mime = uploaded_file.type or f"image/{file_ext.replace('.', '')}"
@@ -53,7 +53,7 @@ def process_uploaded_file(uploaded_file, openai_client):
             "info": f"📸 Immagine: **{file_name}**"
         }
 
-    # --- B. FILE AUDIO (Trascrizione automatica Whisper) ---
+    # AUDIO (Whisper)
     elif file_ext in [".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac"]:
         try:
             audio_file = (file_name, file_bytes, uploaded_file.type or "audio/mpeg")
@@ -61,23 +61,20 @@ def process_uploaded_file(uploaded_file, openai_client):
                 model="whisper-large-v3-turbo",
                 file=audio_file
             )
-            text_content = f"\n\n[TRASCRIZIONE AUDIO '{file_name}']:\n{transcription.text}"
-            return {"is_image": False, "text": text_content, "info": f"🎙️ Audio **{file_name}** trascritto!"}
+            return {"is_image": False, "text": f"\n\n[TRASCRIZIONE AUDIO '{file_name}']:\n{transcription.text}", "info": f"🎙️ Audio **{file_name}** trascritto!"}
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[AUDIO '{file_name}' - Errore: {e}]", "info": f"⚠️ Errore audio: {file_name}"}
 
-    # --- C. DOCUMENTI PDF ---
+    # PDF
     elif file_ext == ".pdf":
         try:
             reader = PdfReader(io.BytesIO(file_bytes))
             text = "\n".join([page.extract_text() or "" for page in reader.pages]).strip()
-            if not text:
-                text = "[PDF scansionato o privo di testo selezionabile]"
-            return {"is_image": False, "text": f"\n\n[CONTENUTO PDF '{file_name}']:\n{text}", "info": f"📄 PDF **{file_name}**"}
+            return {"is_image": False, "text": f"\n\n[CONTENUTO PDF '{file_name}']:\n{text or '[PDF privo di testo]'}", "info": f"📄 PDF **{file_name}**"}
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[PDF '{file_name}']: Errore ({e})", "info": f"⚠️ Errore PDF: {file_name}"}
 
-    # --- D. DOCUMENTI WORD (.docx) ---
+    # WORD (.docx)
     elif file_ext in [".docx", ".doc"]:
         try:
             doc = docx.Document(io.BytesIO(file_bytes))
@@ -86,19 +83,15 @@ def process_uploaded_file(uploaded_file, openai_client):
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[WORD '{file_name}']: Errore ({e})", "info": f"⚠️ Errore Word: {file_name}"}
 
-    # --- E. EXCEL E CSV (.xlsx, .xls, .csv) ---
+    # EXCEL / CSV
     elif file_ext in [".xlsx", ".xls", ".csv"]:
         try:
-            if file_ext == ".csv":
-                df = pd.read_csv(io.BytesIO(file_bytes))
-            else:
-                df = pd.read_excel(io.BytesIO(file_bytes))
-            table_str = df.head(100).to_markdown(index=False)
-            return {"is_image": False, "text": f"\n\n[TABELLA '{file_name}']:\n{table_str}", "info": f"📊 Tabella **{file_name}**"}
+            df = pd.read_csv(io.BytesIO(file_bytes)) if file_ext == ".csv" else pd.read_excel(io.BytesIO(file_bytes))
+            return {"is_image": False, "text": f"\n\n[TABELLA '{file_name}']:\n{df.head(100).to_markdown(index=False)}", "info": f"📊 Tabella **{file_name}**"}
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[TABELLA '{file_name}']: Errore ({e})", "info": f"⚠️ Errore tabella: {file_name}"}
 
-    # --- F. POWERPOINT (.pptx) ---
+    # POWERPOINT (.pptx)
     elif file_ext == ".pptx":
         try:
             prs = Presentation(io.BytesIO(file_bytes))
@@ -107,12 +100,11 @@ def process_uploaded_file(uploaded_file, openai_client):
                 slide_text = [shape.text.strip() for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
                 if slide_text:
                     text_runs.append(f"--- Slide {i} ---\n" + "\n".join(slide_text))
-            text = "\n\n".join(text_runs)
-            return {"is_image": False, "text": f"\n\n[POWERPOINT '{file_name}']:\n{text}", "info": f"📊 PowerPoint **{file_name}**"}
+            return {"is_image": False, "text": f"\n\n[POWERPOINT '{file_name}']:\n" + "\n\n".join(text_runs), "info": f"📊 PowerPoint **{file_name}**"}
         except Exception as e:
             return {"is_image": False, "text": f"\n\n[POWERPOINT '{file_name}']: Errore ({e})", "info": f"⚠️ Errore PPT: {file_name}"}
 
-    # --- G. CODICE E TESTO (LUA, HTML, CSS, JS, PY, JSON, XML, TXT, ecc.) ---
+    # CODICE E TESTO (LUA, HTML, CSS, JS, PY, JSON, XML, TXT, etc.)
     try:
         text = file_bytes.decode("utf-8")
         return {"is_image": False, "text": f"\n\n[FILE CODICE/TESTO '{file_name}']:\n{text}", "info": f"💻 File **{file_name}**"}
@@ -123,7 +115,7 @@ def process_uploaded_file(uploaded_file, openai_client):
         except Exception:
             pass
 
-    # --- H. FILE BINARI GENERICI ---
+    # BINARI GENERICI
     size_kb = round(len(file_bytes) / 1024, 2)
     return {
         "is_image": False,
@@ -142,8 +134,7 @@ def load_github_knowledge():
             if file.endswith(allowed_extensions) and file not in ignored_files:
                 try:
                     with open(file, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        knowledge += f"\n--- CONTENUTO FILE '{file}' ---\n{content}\n"
+                        knowledge += f"\n--- CONTENUTO FILE '{file}' ---\n{f.read()}\n"
                 except Exception:
                     pass
     except Exception as e:
@@ -151,7 +142,28 @@ def load_github_knowledge():
         
     return knowledge
 
-# 5. Gestione Memoria Cloud
+# 5. Sanitizzazione dei messaggi per evitare errori con la API di Groq
+def prepare_messages_for_groq(messages, is_vision_active):
+    clean_list = []
+    for m in messages:
+        role = m["role"]
+        content = m["content"]
+        
+        # Se il contenuto è una lista (contiene immagini/strutture complesse)
+        if isinstance(content, list):
+            if is_vision_active and m == messages[-1]:
+                # Mantiene la struttura solo per l'ultimo messaggio se il modello Vision è attivo
+                clean_list.append(m)
+            else:
+                # Altrimenti converte in testo semplice per non far fallire i modelli standard
+                text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                clean_list.append({"role": role, "content": " ".join(text_parts) or "[Foto/Allegato elaborato]"})
+        else:
+            clean_list.append({"role": role, "content": str(content)})
+            
+    return clean_list
+
+# 6. Gestione Memoria Cloud
 def load_chat_history():
     if redis:
         try:
@@ -165,21 +177,15 @@ def load_chat_history():
 def save_chat_history(messages):
     if redis:
         try:
-            clean_messages = []
-            for m in messages:
-                if isinstance(m.get("content"), list):
-                    text_parts = [p.get("text", "") for p in m["content"] if p.get("type") == "text"]
-                    clean_messages.append({"role": m["role"], "content": f"[Allegato inviato] {' '.join(text_parts)}"})
-                else:
-                    clean_messages.append(m)
+            clean_messages = prepare_messages_for_groq(messages, is_vision_active=False)
             redis.set("fixi_chat_history", json.dumps(clean_messages, ensure_ascii=False))
         except Exception as e:
-            st.error(f"Errore nel salvataggio della memoria cloud: {e}")
+            st.error(f"Errore salvataggio memoria: {e}")
 
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-# 6. Stili CSS
+# 7. Stili CSS
 st.markdown("""
 <style>
     * { box-sizing: border-box; }
@@ -319,7 +325,7 @@ for message in st.session_state.messages:
                     elif part.get("type") == "image_url":
                         st.image(part["image_url"]["url"], width=280)
 
-# Pulsante Tasto "+" per allegare PIÙ FILE contemporaneamente
+# Pulsante Tasto "+" per allegare file
 with st.popover("➕ Allega file (seleziona o trascina più file insieme)", use_container_width=True):
     uploaded_files = st.file_uploader(
         "Scegli uno o più file dal tuo dispositivo", 
@@ -340,14 +346,16 @@ if uploaded_files:
             combined_text += res.get("text", "")
 
 # Input della Chat
-prompt = st.chat_input("Scrivi un messaggio a Fixi...", accept_audio=True)
+prompt = st.chat_input("Scrivi un messaggio a Fixi...")
 
 if prompt:
-    user_text = prompt.text if hasattr(prompt, "text") else str(prompt)
+    user_text = str(prompt)
     model_to_use = "llama-3.3-70b-versatile"
+    is_vision = False
     
     if first_image:
         model_to_use = "llama-3.2-11b-vision-preview"
+        is_vision = True
         full_text = (user_text + combined_text) if (user_text or combined_text) else "Analizza questi file e immagine."
         user_message_content = [
             {"type": "text", "text": full_text},
@@ -371,8 +379,10 @@ if prompt:
         else:
             st.write(user_text)
 
-    with st.spinner("Fixi sta analizzando i file..."):
-        full_messages = [system_prompt] + st.session_state.messages
+    with st.spinner("Fixi sta elaborando..."):
+        # Pulisce i messaggi per l'API
+        clean_history = prepare_messages_for_groq(st.session_state.messages, is_vision_active=is_vision)
+        full_messages = [system_prompt] + clean_history
         
         risposta = client.chat.completions.create(
             model=model_to_use,
